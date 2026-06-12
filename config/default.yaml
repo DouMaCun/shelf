@@ -1,0 +1,52 @@
+﻿# ============================================================
+# Shelf Monitor 默认全局配置
+# ============================================================
+
+pipeline:
+  # 视频输入配置
+  input:
+    type: file                    # rtsp | usb | file
+    source: "data/raw/demo.mp4"   # 视频源地址或路径
+    fps: 5                        # 推理帧率
+    width: 1280                   # 处理宽度
+    height: 720                   # 处理高度
+    buffer_size: 30               # 帧缓冲队列大小
+
+  # 检测器配置
+  detector:
+    model_path: "models/yolo11n.onnx"  # ONNX 模型路径
+    conf_threshold: 0.5                # 置信度阈值
+    iou_threshold: 0.45                # NMS IoU 阈值
+    roi: [0.0, 0.0, 1.0, 1.0]         # 感兴趣区域 [x1, y1, x2, y2] 归一化坐标
+    input_size: [640, 640]             # 模型输入尺寸
+
+  # 跟踪器配置
+  tracker:
+    track_thresh: 0.5             # 跟踪置信度阈值
+    match_thresh: 0.8             # 匹配 IoU 阈值
+    track_buffer: 30              # 丢失跟踪后保留帧数
+    frame_rate: 5                 # 用于运动模型
+
+  # 事件判定配置
+  event:
+    debounce_frames: 5            # 去抖帧数（状态变化需持续 N 帧才触发事件）
+    min_iou_for_slot: 0.3         # 检测框与槽位匹配的最小 IoU
+
+# 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  ws_path: "/ws/events"
+  cors_origins: ["*"]
+
+# 日志配置
+logging:
+  level: "INFO"
+  rotation: "10 MB"
+  retention: "7 days"
+
+# 输出配置
+output:
+  save_snapshots: true            # 是否保存事件截图
+  snapshot_dir: "data/snapshots"  # 截图保存目录
+  db_path: "data/events.db"       # SQLite 事件数据库路径（空字符串表示不启用）

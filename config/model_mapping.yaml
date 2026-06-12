@@ -1,0 +1,12 @@
+﻿# ============================================================
+# YOLO class_id -> SKU 映射
+# 模型训练时每个 class_id 对应一种商品 SKU
+# ============================================================
+
+mapping:
+  0: {sku_id: "cola_330ml",     name: "可口可乐 330ml"}
+  1: {sku_id: "sprite_330ml",   name: "雪碧 330ml"}
+  2: {sku_id: "fanta_330ml",    name: "芬达 330ml"}
+  3: {sku_id: "chips_original", name: "原味薯片"}
+  4: {sku_id: "chips_bbq",      name: "烧烤味薯片"}
+  5: {sku_id: "chips_sourcream",name: "酸奶油味薯片"}

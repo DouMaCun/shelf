@@ -1,0 +1,42 @@
+﻿# ============================================================
+# 货架槽位 RoI 配置
+# 每个槽位定义一个固定的 RoI 区域和一个关联的 SKU 类型
+# 坐标使用归一化坐标 [x1, y1, x2, y2]，范围 0.0 ~ 1.0
+# ============================================================
+
+shelf_id: "shelf_01"
+camera_id: "cam_01"
+width: 1920
+height: 1080
+
+# 槽位定义
+slots:
+  - id: "A1"
+    roi: [0.05, 0.10, 0.15, 0.35]    # 归一化坐标 [x1, y1, x2, y2]
+    sku_id: "cola_330ml"
+    description: "可口可乐 330ml - 第一层左1"
+
+  - id: "A2"
+    roi: [0.16, 0.10, 0.26, 0.35]
+    sku_id: "sprite_330ml"
+    description: "雪碧 330ml - 第一层左2"
+
+  - id: "A3"
+    roi: [0.27, 0.10, 0.37, 0.35]
+    sku_id: "fanta_330ml"
+    description: "芬达 330ml - 第一层左3"
+
+  - id: "B1"
+    roi: [0.05, 0.38, 0.15, 0.63]
+    sku_id: "chips_original"
+    description: "原味薯片 - 第二层左1"
+
+  - id: "B2"
+    roi: [0.16, 0.38, 0.26, 0.63]
+    sku_id: "chips_bbq"
+    description: "烧烤味薯片 - 第二层左2"
+
+  - id: "B3"
+    roi: [0.27, 0.38, 0.37, 0.63]
+    sku_id: "chips_sourcream"
+    description: "酸奶油味薯片 - 第二层左3"

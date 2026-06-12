@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shelf-monitor"
+version = "0.1.0"
+description = "无人货架商品取放识别系统"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "ultralytics>=8.3.0",
+    "onnxruntime>=1.19.0",
+    "opencv-python>=4.10.0",
+    "numpy>=1.26.0",
+    "PyYAML>=6.0.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=14.0",
+    "loguru>=0.7.3",
+    "scipy>=1.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "data", "models", "logs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
