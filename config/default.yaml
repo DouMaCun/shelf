@@ -14,23 +14,39 @@ pipeline:
 
   # 检测器配置
   detector:
-    model_path: "models/yolo11n.onnx"  # ONNX 模型路径
+    backend: onnx                      # onnx（开发机/x86）或 rknn（RK3588 设备）
+    model_path: "models/yolo11n.onnx"  # ONNX 模型路径；rknn 模式下改为 .rknn 路径
     conf_threshold: 0.5                # 置信度阈值
     iou_threshold: 0.45                # NMS IoU 阈值
     roi: [0.0, 0.0, 1.0, 1.0]         # 感兴趣区域 [x1, y1, x2, y2] 归一化坐标
     input_size: [640, 640]             # 模型输入尺寸
 
-  # 跟踪器配置
+  # 跟踪器配置（暂不启用）
   tracker:
-    track_thresh: 0.5             # 跟踪置信度阈值
-    match_thresh: 0.8             # 匹配 IoU 阈值
-    track_buffer: 30              # 丢失跟踪后保留帧数
-    frame_rate: 5                 # 用于运动模型
+    track_thresh: 0.5
+    match_thresh: 0.8
+    track_buffer: 30
+    frame_rate: 5
 
-  # 事件判定配置
-  event:
-    debounce_frames: 5            # 去抖帧数（状态变化需持续 N 帧才触发事件）
-    min_iou_for_slot: 0.3         # 检测框与槽位匹配的最小 IoU
+# 商品识别器配置（自定义训练的俯拍分类模型，与手臂检测器独立）
+item_classifier:
+  backend: onnx                        # onnx 或 rknn
+  model_path: ""                       # 留空则复用 detector 模型（调试用）
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  input_size: [640, 640]
+  model_mapping: "config/model_mapping.yaml"
+
+# 交互状态机配置
+interaction:
+  person_class_id: 0             # COCO person 类 ID（用于手臂检测触发交互）
+  active_fps: 10                 # ACTIVE 状态下的采样帧率（高频）
+  frame_buffer_size: 30          # ACTIVE 阶段缓冲帧数
+  cooldown_seconds: 3            # 识别完成后的静默时长（秒），防止重复触发
+
+# 摄像头 / 货架 ID（写入事件日志）
+camera_id: "cam_01"
+shelf_id: "shelf_01"
 
 # 服务配置
 server:

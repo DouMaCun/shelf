@@ -232,6 +232,44 @@ class EventEngine:
                 result.append(e)
         return result
 
+    def emit_pick(self, sku_id: str | None, confidence: float,
+                  frame: np.ndarray | None = None) -> ShelfEvent:
+        """直接发出一个 pick 事件（出口区识别模式使用）。
+
+        与 update() 不同，此方法不做帧间状态对比，直接生成事件。
+        适用于摄像头俯拍柜门、商品从出口区识别的场景。
+
+        Args:
+            sku_id: 识别到的 SKU，无法识别时传 None（事件仍会发出，sku 为 "unknown"）
+            confidence: 识别置信度 [0, 1]
+            frame: 识别时使用的帧图像（可选，用于截图存档）
+
+        Returns:
+            ShelfEvent: 生成的事件对象
+        """
+        now = time.time()
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+
+        event = ShelfEvent(
+            event_id=f"evt_{uuid.uuid4().hex[:12]}",
+            timestamp=now_iso,
+            camera_id=self.camera_id,
+            shelf_id=self.shelf_id,
+            event_type="pick",
+            sku_id=sku_id or "unknown",
+            slot_id="",        # 出口区模式不使用槽位
+            track_id=-1,
+            confidence=confidence,
+            frame=frame.copy() if frame is not None else None,
+        )
+        self._events.append(event)
+        logger.info(f"事件: PICK | sku={event.sku_id} | conf={confidence:.2f}")
+
+        if self._on_event:
+            self._on_event(event)
+
+        return event
+
     def reset(self) -> None:
         """重置引擎状态和事件历史。
 

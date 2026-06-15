@@ -1,4 +1,48 @@
-﻿## 一、项目概述
+﻿## ⚠️ V2 架构更新说明
+
+> 本文档（第一至十二节）描述的是**初始槽位方案（V1）**，已被 V2 架构取代。
+> V1 假设摄像头正对货架正面、商品固定摆放，不适用于俯拍 + 随机摆放场景。
+> 保留原文作为设计背景和历史参考。
+
+### V2 核心变化
+
+**场景**：摄像头装在柜门顶部向下俯拍，商品（大件电子器件）随机摆放，无门磁传感器。
+
+**关键洞察**：任何被取走的商品都必须经过柜门开口（摄像头正下方），取出时商品会举起穿过视野，这是最佳识别窗口。
+
+**V2 管线**（替代 V1 的槽位状态机）：
+
+```
+摄像头帧
+  ↓
+手臂检测（YOLO COCO person 类）
+  ↓
+交互状态机（InteractionMonitor）
+  IDLE → ACTIVE（缓冲帧）→ CLASSIFYING → COOLDOWN → IDLE
+  ↓（进入 CLASSIFYING 时）
+选最清晰帧（Laplacian 方差）
+  ↓
+YOLO 视觉分类（需俯拍角度训练数据）
+  ↓
+pick 事件 → WebSocket 推送 / 截图 / SQLite
+```
+
+**V2 新增/改变的文件**：
+
+| 文件 | 变化 |
+|---|---|
+| `pipeline/interaction_monitor.py` | 新增，替代 `shelf_state.py` |
+| `pipeline/identifier/item_classifier.py` | 新增，YOLO 视觉分类 |
+| `pipeline/event_engine.py` | 新增 `emit_pick()` 方法 |
+| `server/app.py` | 重写 `init_pipeline()` 和 `run_pipeline_loop()` |
+| `config/default.yaml` | 新增 `interaction` 和 `item_classifier` 节 |
+| `config/shelf_layout.yaml` | V2 不再使用（商品随机摆放） |
+
+**新增依赖**：无（复用现有依赖栈）
+
+---
+
+## 一、项目概述
 
 ### 1.1 业务场景
 

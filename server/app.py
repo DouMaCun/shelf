@@ -38,8 +38,9 @@ from loguru import logger
 from pipeline.io.source import create_source, VideoSource
 from pipeline.detector.yolo_detector import YOLODetector
 from pipeline.detector.roi import apply_roi
-from pipeline.tracker.byte_tracker import ByteTracker
-from pipeline.shelf_state import ShelfState, ShelfConfig
+from pipeline.detector.rknn_detector import RKNNDetector
+from pipeline.interaction_monitor import InteractionMonitor, InteractionState
+from pipeline.identifier.item_classifier import ItemClassifier
 from pipeline.event_engine import EventEngine, ShelfEvent
 from pipeline.output import EventOutput
 
@@ -49,9 +50,10 @@ from pipeline.output import EventOutput
 # ============================================================================
 
 video_source: VideoSource | None = None
-detector: YOLODetector | None = None
-tracker: ByteTracker | None = None
-shelf_state: ShelfState | None = None
+detector = None          # 手臂/人体检测器（COCO 预训练，YOLODetector 或 RKNNDetector）
+item_detector = None     # 商品分类检测器（自定义训练）
+interaction_monitor: InteractionMonitor | None = None
+item_classifier: ItemClassifier | None = None
 event_engine: EventEngine | None = None
 event_output: EventOutput | None = None
 
@@ -83,60 +85,80 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def init_pipeline(config: dict, shelf_config: ShelfConfig) -> None:
-    """初始化推理管线所有组件。
+def _make_detector(det_cfg: dict):
+    """根据配置创建检测器（ONNX 或 RKNN）。"""
+    backend = det_cfg.get('backend', 'onnx')
+    kwargs = dict(
+        model_path=det_cfg['model_path'],
+        conf_threshold=det_cfg.get('conf_threshold', 0.5),
+        iou_threshold=det_cfg.get('iou_threshold', 0.45),
+        input_size=tuple(det_cfg.get('input_size', [640, 640])),
+    )
+    if backend == 'rknn':
+        d = RKNNDetector(**kwargs)
+        logger.info(f"检测器后端: RKNN NPU ({det_cfg['model_path']})")
+    else:
+        d = YOLODetector(**kwargs)
+        logger.info(f"检测器后端: ONNX Runtime ({det_cfg['model_path']})")
+    d.load()
+    return d
 
-    按顺序创建以下组件：
+
+def init_pipeline(config: dict) -> None:
+    """初始化出口区识别管线所有组件。
+
+    组件创建顺序：
     1. 视频输入源（VideoSource）
-    2. YOLO 检测器（YOLODetector，同时加载 ONNX 模型）
-    3. ByteTrack 跟踪器（ByteTracker）
-    4. 货架状态管理器（ShelfState）
-    5. 事件输出管理器（EventOutput）
-    6. 事件判定引擎（EventEngine）
+    2. 手臂检测器（COCO 预训练，用于检测手臂触发交互）
+    3. 商品检测器（自定义训练，用于 YOLO 视觉分类）
+    4. 交互状态机（InteractionMonitor）
+    5. 商品分类器（ItemClassifier，封装商品检测器）
+    6. 事件输出管理器（EventOutput）
+    7. 事件引擎（EventEngine）
 
     Args:
-        config: 全局配置字典
-        shelf_config: 货架布局配置对象
+        config: 全局配置字典（来自 default.yaml）
     """
-    global video_source, detector, tracker, shelf_state, event_engine, event_output
+    global video_source, detector, item_detector
+    global interaction_monitor, item_classifier
+    global event_engine, event_output
 
     pipeline_cfg = config['pipeline']
+    interaction_cfg = config.get('interaction', {})
     output_cfg = config.get('output', {})
 
     # ---- 1. 视频输入源 ----
     video_source = create_source(pipeline_cfg['input'])
     logger.info("视频源已创建")
 
-    # ---- 2. YOLO 检测器 ----
-    detector = YOLODetector(
-        model_path=pipeline_cfg['detector']['model_path'],
-        conf_threshold=pipeline_cfg['detector'].get('conf_threshold', 0.5),
-        iou_threshold=pipeline_cfg['detector'].get('iou_threshold', 0.45),
-        input_size=tuple(pipeline_cfg['detector'].get('input_size', [640, 640])),
-    )
-    detector.load()  # 加载 ONNX 模型
-    logger.info("检测器已加载")
+    # ---- 2. 手臂检测器（COCO 预训练，检测 person 类触发交互）----
+    detector = _make_detector(pipeline_cfg['detector'])
 
-    # ---- 3. ByteTrack 跟踪器 ----
-    tracker_cfg = pipeline_cfg['tracker']
-    tracker = ByteTracker(
-        track_thresh=tracker_cfg.get('track_thresh', 0.5),
-        match_thresh=tracker_cfg.get('match_thresh', 0.8),
-        track_buffer=tracker_cfg.get('track_buffer', 30),
-        frame_rate=tracker_cfg.get('frame_rate', 5),
-    )
-    logger.info("跟踪器已初始化")
+    # ---- 3. 商品检测器（自定义训练，用于 YOLO 视觉分类回退）----
+    item_det_cfg = config.get('item_classifier', {})
+    if item_det_cfg.get('model_path'):
+        item_detector = _make_detector(item_det_cfg)
+    else:
+        # 未配置独立商品模型时，复用手臂检测器（开发调试用）
+        item_detector = detector
+        logger.warning("item_classifier.model_path 未配置，视觉分类将复用手臂检测器")
 
-    # ---- 4. 货架状态管理器 ----
-    event_cfg = pipeline_cfg['event']
-    shelf_state = ShelfState(
-        config=shelf_config,
-        min_iou_for_slot=event_cfg.get('min_iou_for_slot', 0.3),
-        debounce_frames=event_cfg.get('debounce_frames', 5),
+    # ---- 4. 交互状态机 ----
+    interaction_monitor = InteractionMonitor(
+        cooldown_seconds=interaction_cfg.get('cooldown_seconds', 3.0),
+        frame_buffer_size=interaction_cfg.get('frame_buffer_size', 30),
     )
-    logger.info("货架状态已初始化")
+    logger.info("交互状态机已初始化")
 
-    # ---- 5. 事件输出管理器 ----
+    # ---- 5. 商品分类器 ----
+    mapping_path = item_det_cfg.get('model_mapping', 'config/model_mapping.yaml')
+    item_classifier = ItemClassifier(
+        detector=item_detector,
+        mapping_path=mapping_path,
+    )
+    logger.info("商品分类器已初始化")
+
+    # ---- 6. 事件输出管理器 ----
     event_output = EventOutput(
         save_snapshots=output_cfg.get('save_snapshots', False),
         snapshot_dir=output_cfg.get('snapshot_dir', 'data/snapshots'),
@@ -144,13 +166,10 @@ def init_pipeline(config: dict, shelf_config: ShelfConfig) -> None:
     )
     logger.info("事件输出已初始化")
 
-    # ---- 6. 事件判定引擎 ----
-    # 不设置同步回调（on_event），因为在 async 管线循环中异步广播
-    event_engine = EventEngine(
-        camera_id=shelf_config.camera_id,
-        shelf_id=shelf_config.shelf_id,
-        on_event=None,
-    )
+    # ---- 7. 事件引擎 ----
+    camera_id = config.get('camera_id', 'cam_01')
+    shelf_id = config.get('shelf_id', 'shelf_01')
+    event_engine = EventEngine(camera_id=camera_id, shelf_id=shelf_id)
     logger.info("事件引擎已初始化")
 
 
@@ -159,79 +178,77 @@ def init_pipeline(config: dict, shelf_config: ShelfConfig) -> None:
 # ============================================================================
 
 async def run_pipeline_loop(config: dict) -> None:
-    """推理管线主循环（异步）。
+    """推理管线主循环——出口区识别模式（异步）。
 
     每帧的处理流程：
-    1. 从视频源缓冲区取一帧
-    2. 可选：ROI 裁剪，只保留货架区域
-    3. YOLO 目标检测
-    4. ByteTrack 多目标跟踪
-    5. 更新货架槽位状态（含去抖）
-    6. 事件判定（比较前后帧状态差异）
-    7. WebSocket 广播新事件
-
-    每 100 帧输出一次性能统计（帧号、跟踪数、推理耗时、实际帧率）。
+    1. 根据当前状态决定采样间隔（IDLE 低频 / ACTIVE 高频）
+    2. 从视频源取帧
+    3. 手臂检测（YOLO，判断是否有人伸手进柜）
+    4. 推进交互状态机
+    5. 状态变为 CLASSIFYING 时：取最清晰帧 → YOLO 视觉分类 → 发出事件
 
     Args:
         config: 全局配置字典
     """
-    global video_source, detector, tracker, shelf_state, event_engine, event_output
+    global video_source, detector, interaction_monitor
+    global item_classifier, event_engine, event_output
     global pipeline_running
 
-    pipeline_cfg = config['pipeline']
-    roi_cfg = pipeline_cfg['detector'].get('roi', [0, 0, 1, 1])  # 默认全图
+    interaction_cfg = config.get('interaction', {})
+    person_class_id = interaction_cfg.get('person_class_id', 0)
+    idle_fps = config['pipeline']['input'].get('fps', 5)
+    active_fps = interaction_cfg.get('active_fps', 10)
+    idle_interval = 1.0 / max(idle_fps, 1)
+    active_interval = 1.0 / max(active_fps, 1)
 
-    # 启动视频源（后台线程开始读取帧）
     video_source.start()
     pipeline_running = True
     frame_count = 0
+    prev_state = InteractionState.IDLE
 
     try:
         while pipeline_running and video_source._running:
+            # 根据状态选采样间隔
+            current_state = interaction_monitor.state
+            interval = active_interval if current_state == InteractionState.ACTIVE else idle_interval
+
             # ---- Step 1: 取帧 ----
             frame = video_source.read()
             if frame is None:
-                # 缓冲区空，等待后台线程填充
                 await asyncio.sleep(0.01)
                 continue
 
             frame_count += 1
 
-            # ---- Step 2: ROI 裁剪 ----
-            if roi_cfg != [0, 0, 1, 1]:
-                roi_frame = apply_roi(frame, roi_cfg)
-            else:
-                roi_frame = frame
+            # ---- Step 2: 手臂检测 ----
+            detections = detector.detect(frame)
+            has_person = any(
+                int(d[5]) == person_class_id for d in detections
+            ) if len(detections) > 0 else False
 
-            # ---- Step 3: 目标检测 ----
-            detections = detector.detect(roi_frame)
+            # ---- Step 3: 推进状态机 ----
+            new_state = interaction_monitor.update(frame, has_person)
 
-            # ---- Step 4: 多目标跟踪 ----
-            tracks = tracker.update(detections)
+            # ---- Step 4: 刚进入 CLASSIFYING → YOLO 识别并发事件 ----
+            if new_state == InteractionState.CLASSIFYING and prev_state != InteractionState.CLASSIFYING:
+                best_frame = interaction_monitor.get_best_frame()
+                sku_id, confidence = _identify_item(best_frame)
+                event = event_engine.emit_pick(sku_id, confidence, best_frame)
+                if event_output:
+                    await event_output.broadcast_async(event, ws_clients)
+                interaction_monitor.complete_classification()
 
-            # ---- Step 5: 货架状态更新 ----
-            now = time.time()
-            slot_occupancy = shelf_state.update(tracks, now)
+            prev_state = new_state
 
-            # ---- Step 6: 事件判定 ----
-            new_events = event_engine.update(slot_occupancy, shelf_state, frame)
-
-            # ---- Step 7: WebSocket 广播新事件 ----
-            if event_output and new_events:
-                for evt in new_events:
-                    await event_output.broadcast_async(evt, ws_clients)
-
-            # 每 100 帧输出一次性能统计
-            if frame_count % 100 == 0:
+            # 每 200 帧输出一次性能统计
+            if frame_count % 200 == 0:
                 logger.debug(
-                    f"Frame={frame_count}, "
-                    f"tracks={len(tracks)}, "
+                    f"Frame={frame_count}, state={current_state.value}, "
                     f"inference={detector.avg_inference_time * 1000:.1f}ms, "
                     f"fps={video_source.actual_fps:.1f}"
                 )
 
-            # 短暂让出控制权，避免阻塞 asyncio 事件循环
-            await asyncio.sleep(0)
+            await asyncio.sleep(interval)
 
     except Exception as e:
         logger.exception(f"管线异常: {e}")
@@ -239,6 +256,21 @@ async def run_pipeline_loop(config: dict) -> None:
         video_source.stop()
         pipeline_running = False
         logger.info("管线主循环已退出")
+
+
+def _identify_item(frame) -> tuple[str | None, float]:
+    """YOLO 视觉分类识别被取走商品。
+
+    Args:
+        frame: 最佳帧（BGR ndarray），可能为 None
+
+    Returns:
+        (sku_id, confidence)：识别结果
+    """
+    if frame is None:
+        logger.warning("无有效帧可用于识别")
+        return None, 0.0
+    return item_classifier.classify(frame)
 
 
 # ============================================================================
@@ -261,6 +293,9 @@ async def lifespan(app: FastAPI):
     pipeline_running = False
     if video_source:
         video_source.stop()
+    for det in (detector, item_detector):
+        if det and hasattr(det, 'release'):
+            det.release()
     if event_output:
         event_output.close()
     logger.info("服务已停止")
@@ -300,19 +335,25 @@ async def health():
 
 @app.get("/api/shelf/state")
 async def get_shelf_state():
-    """获取当前货架所有槽位的状态快照。
+    """获取当前交互状态和最近事件摘要。
 
-    返回每个槽位的：
-    - slot_id, sku_id
-    - occupied: 是否被商品占据
-    - confidence: 检测置信度
-    - last_seen: 最后检测时间戳
-
-    用于业务后端或前端监控面板展示货架实时状态。
+    返回：
+    - interaction_state: 当前状态机状态（idle / active / classifying / cooldown）
+    - buffer_frames: ACTIVE 阶段已缓冲帧数
+    - recent_events: 最近 10 条 pick 事件
     """
-    if shelf_state is None:
+    if interaction_monitor is None:
         return JSONResponse({"error": "管线未初始化"}, status_code=503)
-    return shelf_state.get_snapshot()
+    recent = event_engine.get_events() if event_engine else []
+    return {
+        "interaction_state": interaction_monitor.state.value,
+        "buffer_frames": interaction_monitor.buffer_size,
+        "recent_events": [
+            {"event_id": e.event_id, "timestamp": e.timestamp,
+             "sku_id": e.sku_id, "confidence": e.confidence}
+            for e in recent[-10:]
+        ],
+    }
 
 
 @app.get("/api/events")
@@ -406,8 +447,6 @@ def main():
     parser = argparse.ArgumentParser(description="Shelf Monitor - 无人货架监控服务")
     parser.add_argument("-c", "--config", default="config/default.yaml",
                         help="全局配置文件路径（默认 config/default.yaml）")
-    parser.add_argument("-s", "--shelf", default="config/shelf_layout.yaml",
-                        help="货架布局配置文件路径（默认 config/shelf_layout.yaml）")
     parser.add_argument("--no-pipeline", action="store_true",
                         help="仅启动 Web 服务，不启动推理管线（用于 API 调试）")
     args = parser.parse_args()
@@ -422,10 +461,9 @@ def main():
 
     # 加载配置
     config = load_config(args.config)
-    shelf_config = ShelfConfig.from_yaml(args.shelf)
 
     # 初始化推理管线
-    init_pipeline(config, shelf_config)
+    init_pipeline(config)
 
     # 启动推理管线（在 asyncio 事件循环中作为 task 运行）
     if not args.no_pipeline:
